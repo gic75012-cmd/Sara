@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>دفتر الحضور والأجور</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Lalezar&display=swap');
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: 'Cairo', sans-serif; }
+        .stamp-btn { transition: transform 0.12s ease; }
+        .stamp-btn:active { transform: scale(0.85) rotate(-4deg); }
+        input:focus, textarea:focus { outline: 2px solid #E0631F; outline-offset: 1px; }
+        @media print { .no-print { display: none !important; } body, div { background: white !important; } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // الأيقونات البديلة البسيطة لعدم تعقيد التحميل على الهاتف
+        const Icons = {
+            Plus: () => <span>➕</span>, Trash2: () => <span>🗑️</span>, Pencil: () => <span>✏️</span>,
+            ChevronRight: () => <span>◀</span>, ChevronLeft: () => <span>▶</span>, Printer: () => <span>🖨️</span>,
+            RotateCcw: () => <span>🔄</span>, Save: () => <span>💾</span>, X: () => <span>❌</span>, Check: () => <span>✔️</span>
+        };
+
+        const C = {
+            paper: "#EAE3D3", paperDark: "#DED2AF", paperLine: "#C9BC93", ink: "#2B2620",
+            inkSoft: "#5A5145", oxblood: "#8B2E2E", orange: "#E0631F", green: "#3F6B3D", blue: "#35607A", amber: "#B8811F"
+        };
+
+        function dayCellStyle(hours) {
+            if (hours === undefined || hours === null || hours === "") return { fill: "transparent", color: C.inkSoft, border: true };
+            if (hours === 0) return { fill: C.oxblood, color: "#fff", border: false };
+            if (hours < 8) return { fill: C.amber, color: "#fff", border: false };
+            if (hours === 8) return { fill: C.green, color: "#fff", border: false };
+            return { fill: C.blue, color: "#fff", border: false };
+        }
+
+        const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
+        function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
+        function attKey(workerId, year, month) { return `${workerId}:${year}-${String(month).padStart(2, '0')}`; }
+        function uid() { return Math.random().toString(36).slice(2, 10); }
+        function fmt(n) { return new Intl.NumberFormat("ar-EG", { maximumFractionDigits: 2 }).format(n || 0); }
+        
+        function daysHoursLabel(totalHours) {
+            const d = Math.floor(totalHours / 8);
+            const h = Math.round((totalHours - d * 8) * 100) / 100;
+            const parts = [];
+            if (d > 0) parts.push(`${d} يوم`);
+            if (h > 0 || parts.length === 0) parts.push(`${fmt(h)} ساعة`);
+            return parts.join(" و ");
+        }
+
+        const DEFAULT_DATA = { companyName: "ورشتي", workers: [], attendance: {}, advances: {}, overtime: {} };
+
+        function AttendanceLedger() {
+            const [data, setData] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [tab, setTab] = useState("workers");
+            const now = new Date();
+            const [year, setYear] = useState(now.getFullYear());
+            const [month, setMonth] = useState(now.getMonth() + 1);
+            const [newWorker, setNewWorker] = useState({ name: "", rate: "" });
+            const [editingId, setEditingId] = useState(null);
+            const [editDraft, setEditDraft] = useState({ name: "", rate: "" });
+            const [savingFlash, setSavingFlash] = useState(false);
+            const [toast, setToast] = useState(null);
+            const [confirmModal, setConfirmModal] = useState(null); 
+            const [dayModal, setDayModal] = useState(null); 
+
+            const notify = useCallback((msg) => {
+                setToast(msg);
+                setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 2200);
+            }, []);
+
+            const askConfirm = useCallback((message, onYes) => { setConfirmModal({ message, onYes }); }, []);
+
+            useEffect(() => {
+                try {
+                    const res = localStorage.getItem("ledger-data");
+                    setData(res ? JSON.parse(res) : DEFAULT_DATA);
+                } catch (e) {
+                    setData(DEFAULT_DATA);
+                } finally {
+                    setLoading(false);
+                }
+            }, []);
+
+            const persist = useCallback(async (next) => {
+                setData(next);
+                try {
+                    setSavingFlash(true);
+                    localStorage.setItem("ledger-data", JSON.stringify(next));
+                } catch (e) {
+                    console.error("تعذر الحفظ", e);
+                } finally {
+                    setTimeout(() => setSavingFlash(false), 500);
+                }
+            }, []);
+
+            const addWorker = () => {
+                if (!newWorker.name.trim() || !newWorker.rate) return;
+                const w = { id: uid(), name: newWorker.name.trim(), rate: parseFloat(newWorker.rate) || 0 };
+                persist({ ...data, workers: [...data.workers, w] });
+                setNewWorker({ name: "", rate: "" });
+            };
+
+            const startEdit = (w) => { setEditingId(w.id); setEditDraft({ name: w.name, rate: String(w.rate) }); };
+            const saveEdit = (id) => {
+                const w = data.workers.find((x) => x.id === id);
+                askConfirm(`سيتم تعديل بيانات العامل "${w?.name}". هل تريد المتابعة؟`, () => {
+                    const workers = data.workers.map((x) => x.id === id ? { ...x, name: editDraft.name.trim() || x.name, rate: parseFloat(editDraft.rate) || 0 } : x);
+                    persist({ ...data, workers });
+                    setEditingId(null);
+                    notify("تم حفظ تعديل بيانات العامل");
+                });
+            };
+
+            const deleteWorker = (id) => {
+                const w = data.workers.find((x) => x.id === id);
+                askConfirm(`تحذير: سيتم حذف العامل "${w?.name}" نهائياً. هل أنت متأكد؟`, () => {
+                    const workers = data.workers.filter((x) => x.id !== id);
+                    persist({ ...data, workers });
+                    notify(`تم حذف العامل "${w?.name}"`);
+                });
+            };
+
+            const openDayModal = (workerId, day) => {
+                const w = data.workers.find((x) => x.id === workerId);
+                const key = attKey(workerId, year, month);
+                const existing = data.attendance[key]?.[String(day)];
+                setDayModal({ workerId, workerName: w?.name, day, value: existing === undefined ? "" : String(existing) });
+            };
+
+            const saveDayModal = () => {
+                const { workerId, day, value, workerName } = dayModal;
+                const key = attKey(workerId, year, month);
+                const monthData = { ...(data.attendance[key] || {}) };
+                if (value === "" || value === null) {
+                    delete monthData[String(day)];
+                    persist({ ...data, attendance: { ...data.attendance, [key]: monthData } });
+                    setDayModal(null);
+                    return;
+                }
+                const hours = Math.max(0, parseFloat(value) || 0);
+                monthData[String(day)] = hours;
+                persist({ ...data, attendance: { ...data.attendance, [key]: monthData } });
+                setDayModal(null);
+            };
+
+            const changeMonth = (delta) => {
+                let m = month + delta, y = year;
+                if (m > 12) { m = 1; y++; }
+                if (m < 1) { m = 12; y--; }
+                setMonth(m); setYear(y);
+            };
+
+            const payroll = useMemo(() => {
+                if (!data) return [];
+                const nDays = daysInMonth(year, month);
+                return data.workers.map((w) => {
+                    const key = attKey(w.id, year, month);
+                    const monthData = data.attendance[key] || {};
+                    let workedHours = 0, absentDays = 0;
+                    for (let d = 1; d <= nDays; d++) {
+                        const h = monthData[String(d)];
+                        if (h === undefined) continue;
+                        if (h === 0) absentDays++; else workedHours += h;
+                    }
+                    const hourlyRate = w.rate / 8;
+                    const paidDays = workedHours / 8;
+                    const basePay = workedHours * hourlyRate;
+                    const overtimeHours = data.overtime?.[key] || 0;
+                    const overtimePay = overtimeHours * hourlyRate;
+                    const gross = basePay + overtimePay;
+                    const advance = data.advances?.[key] || 0;
+                    return { worker: w, workedHours, absentDays, paidDays, basePay, overtimeHours, overtimePay, gross, advance, net: gross - advance, totalHoursEquivalent: workedHours + overtimeHours };
+                });
+            }, [data, year, month]);
+
+            const totals = useMemo(() => {
+                return payroll.reduce((acc, p) => ({
+                    basePay: acc.basePay + p.basePay, overtimePay: acc.overtimePay + p.overtimePay,
+                    gross: acc.gross + p.gross, advance: acc.advance + p.advance, net: acc.net + p.net,
+                }), { basePay: 0, overtimePay: 0, gross: 0, advance: 0, net: 0 });
+            }, [payroll]);
+
+            if (loading || !data) return <div style={{ background: C.paper, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>جارِ فتح الدفتر...</div>;
+            const nDays = daysInMonth(year, month);
+
+            return (
+                <div style={{ background: C.paper, minHeight: "100vh", color: C.ink, padding: 12 }}>
+                    <header style={{ borderBottom: `3px double ${C.ink}`, paddingBottom: 10 }} className="no-print">
+                        <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 28, color: C.orange }}>دفتر الحضور والأجور</div>
+                        <nav style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                            <button onClick={() => setTab("workers")} style={{ padding: 8, background: tab==="workers"?C.ink:"#fff", color: tab==="workers"?C.paper:C.ink, border: "1px solid #000" }}>العمال</button>
+                            <button onClick={() => setTab("attendance")} style={{ padding: 8, background: tab==="attendance"?C.ink:"#fff", color: tab==="attendance"?C.paper:C.ink, border: "1px solid #000" }}>الحضور</button>
+                            <button onClick={() => setTab("payroll")} style={{ padding: 8, background: tab==="payroll"?C.ink:"#fff", color: tab==="payroll"?C.paper:C.ink, border: "1px solid #000" }}>الرواتب</button>
+                        </nav>
+                    </header>
+
+                    <main style={{ marginTop: 12 }}>
+                        {tab === "workers" && (
+                            <div>
+                                <div style={{ background: "#fff", padding: 10, borderRadius: 6, marginBottom: 10 }}>
+                                    <input placeholder="اسم العامل" value={newWorker.name} onChange={e => setNewWorker({...newWorker, name: e.target.value})} style={{ width: "100%", padding: 8, marginBottom: 6 }} />
+                                    <input placeholder="سعر اليوم" type="number" value={newWorker.rate} onChange={e => setNewWorker({...newWorker, rate: e.target.value})} style={{ width: "100%", padding: 8, marginBottom: 6 }} />
+                                    <button onClick={addWorker} style={{ background: C.orange, color: "#fff", padding: 8, width: "100%", border: "none" }}>إضافة عامل</button>
+                                </div>
+                                {data.workers.map(w => (
+                                    <div key={w.id} style={{ background: "#fff", padding: 10, marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+                                        <div><b>{w.name}</b> ({w.rate} ج/يوم)</div>
+                                        <button onClick={() => deleteWorker(w.id)} style={{ color: C.oxblood, background: "none", border: "none" }}><Icons.Trash2 /></button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {tab === "attendance" && (
+                            <div>
+                                <div style={{ display: "flex", justifyContent: "center", gap: 10, marginBottom: 10 }}>
+                                    <button onClick={() => changeMonth(1)}><Icons.ChevronRight /></button>
+                                    <span>{MONTHS_AR[month-1]} {year}</span>
+                                    <button onClick={() => changeMonth(-1)}><Icons.ChevronLeft /></button>
+                                </div>
+                                <div style={{ overflowX: "auto", background: "#fff" }}>
+                                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                        <thead>
+                                            <tr style={{ background: C.paperDark }}>
+                                                <th style={{ padding: 6, textAlign: "right" }}>العامل</th>
+                                                {Array.from({ length: nDays }, (_, i) => i + 1).map(d => <th key={d} style={{ padding: 4 }}>{d}</th>)}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {data.workers.map(w => {
+                                                const key = attKey(w.id, year, month);
+                                                const monthData = data.attendance[key] || {};
+                                                return (
+                                                    <tr key={w.id} style={{ borderBottom: "1px solid #ccc" }}>
+                                                        <td style={{ padding: 6, fontWeight: "bold" }}>{w.name}</td>
+                                                        {Array.from({ length: nDays }, (_, i) => i + 1).map(d => {
+                                                            const h = monthData[String(d)];
+                                                            const st = dayCellStyle(h);
+                                                            return (
+                                                                <td key={d} style={{ padding: 2, textAlign: "center" }}>
+                                                                    <button onClick={() => openDayModal(w.id, d)} style={{ width: 24, height: 24, borderRadius: "50%", background: st.fill, border: st.border?"1px dashed #aaa":"none", color: st.color, fontSize: 10 }}>
+                                                                        {h === undefined ? "" : h === 0 ? "✕" : h}
+                                                                    </button>
+                                                                </td>
+                                                            );
+                                                        })}
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {tab === "payroll" && (
+                            <div>
+                                <h3 style={{ textAlign: "center" }}>كشف راتب {MONTHS_AR[month-1]}</h3>
+                                <div style={{ overflowX: "auto", background: "#fff" }}>
+                                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                        <thead>
+                                            <tr style={{ background: C.paperDark }}>
+                                                <th style={{ padding: 6 }}>العامل</th>
+                                                <th style={{ padding: 6 }}>أيام العمل</th>
+                                                <th style={{ padding: 6 }}>الصافي</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {payroll.map(p => (
+                                                <tr key={p.worker.id} style={{ borderBottom: "1px solid #ccc", textAlign: "center" }}>
+                                                    <td style={{ padding: 6, fontWeight: "bold", textAlign: "right" }}>{p.worker.name}</td>
+                                                    <td style={{ padding: 6 }}>{fmt(p.paidDays)} يوم</td>
+                                                    <td style={{ padding: 6, color: C.orange, fontWeight: "bold" }}>{fmt(p.net)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {dayModal && (
+                        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <div style={{ background: "#fff", padding: 16, borderRadius: 8, width: 280, textAlign: "center" }}>
+                                <h4>يوم {dayModal.day} — {dayModal.workerName}</h4>
+                                <input type="number" placeholder="عدد الساعات (0 للغياب)" value={dayModal.value} onChange={e => setDayModal({...dayModal, value: e.target.value})} style={{ width: "100%", padding: 8, marginBottom: 12, textAlign: "center" }} />
+                                <div style={{ display: "flex", justifyContent: "space-around" }}>
+                                    <button onClick={() => setDayModal(null)} style={{ padding: 6 }}>إلغاء</button>
+                                    <button onClick={saveDayModal} style={{ padding: 6, background: C.orange, color: "#fff", border: "none" }}>حفظ</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ScroogeReactDOM.createRoot(document.getElementById('root'));
+        // لتخطي خطأ في اسم المكتبة الداخلي ببعض الأنظمة
+        const ReactDomRender = window.ReactDOM?.createRoot ? window.ReactDOM.createRoot(document.getElementById('root')) : ReactDOM.createRoot(document.getElementById('root'));
+        ReactDomRender.render(<AttendanceLedger />);
+    </script>
+</body>
+</html>
