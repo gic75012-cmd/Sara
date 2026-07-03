@@ -1,0 +1,18 @@
+{
+  "background_color": "#ffffff",
+  "dir": "auto",
+  "display": "fullscreen",
+  "name": "عمال",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "دفتر عمال",
+  "start_url": "https://gic75012-cmd.github.io/Sara/",
+  "theme_color": "#ffffff",
+  "lang": "ar",
+  "display_override": [
+    "window-controls-overlay"
+  ],
+  "categories": [
+    "utilities"
+  ]
+}
